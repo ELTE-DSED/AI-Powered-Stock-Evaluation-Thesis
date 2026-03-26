@@ -211,7 +211,7 @@ col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     with st.form(key='search_form'):
         user_input = st.text_input("", placeholder="Enter Ticker or Company Name (e.g. Nvidia, AAPL)...")
-        submit_button = st.form_submit_button(label='EXECUTE ANALYSIS')
+        submit_button = st.form_submit_button(label='ANALYZE')
 
 if submit_button and user_input:
     ticker = convert_name_to_ticker(user_input)
