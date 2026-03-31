@@ -188,7 +188,7 @@ class ScoringEngine:
     #  Piotroski kept as a display-only quality badge, not a scoring driver.
     # ─────────────────────────────────────────────────────────
     def calculate_fundamental(self, info):
-        if not info:
+        if info is None or (hasattr(info, 'empty') and info.empty) or (isinstance(info, dict) and not info):
             return 0, {}
 
         sector     = info.get('sector', 'Unknown')

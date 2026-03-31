@@ -7,3 +7,10 @@ requests
 beautifulsoup4
 groq
 python-dotenv
+
+### for testing #########
+
+pytest
+pytest-mock 
+numpy
+ta
