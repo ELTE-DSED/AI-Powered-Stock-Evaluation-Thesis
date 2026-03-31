@@ -30,9 +30,39 @@ if api_keys_str:
 else:
     API_KEY_POOL = []
 
+# --- SCRAPER API KEY LOADING ---
+SCRAPER_API_KEY = None
+try:
+    if "SCRAPER_API_KEY" in st.secrets:
+        SCRAPER_API_KEY = st.secrets["SCRAPER_API_KEY"]
+except: pass
+
+if not SCRAPER_API_KEY:
+    load_dotenv()
+    SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
+
+# --- ROTATING USER AGENTS ---
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.0.0",
+]
+
+# --- SESSION BUILDER ---
+def _build_session():
+    session = requests.Session()
+    session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
+    if SCRAPER_API_KEY:
+        proxy_url = f"http://scraperapi:{SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001"
+        session.proxies = {"http": proxy_url, "https": proxy_url}
+        session.verify = False
+    return session
+
 # --- RETRY HELPER ---
 def _fetch_with_retry(func, retries=3, delay=2):
-    """Call func() up to `retries` times, waiting `delay` seconds between attempts."""
     for attempt in range(retries):
         try:
             result = func()
@@ -55,12 +85,12 @@ def convert_name_to_ticker(user_input):
     if " and " in clean_input.lower(): search_queries.append(clean_input.lower().replace(" and ", " & "))
 
     us_exchanges = ['NYQ', 'NMS', 'NGM', 'NCM', 'ASE', 'PCX']
-    headers = {'User-Agent': 'Mozilla/5.0'}
 
     for query in search_queries:
         try:
+            session = _build_session()
             url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
-            response = requests.get(url, headers=headers, timeout=5)
+            response = session.get(url, timeout=6)
             data = response.json()
             if 'quotes' in data and data['quotes']:
                 for quote in data['quotes']:
@@ -75,15 +105,12 @@ class DataLoader:
         pass
 
     def _get_ticker(self, ticker):
-        """Return a fresh yfinance Ticker object with no cached session."""
-        t = yf.Ticker(ticker)
+        session = _build_session()
         try:
-            t.session = None
+            return yf.Ticker(ticker, session=session)
         except Exception:
-            pass
-        return t
+            return yf.Ticker(ticker)
 
-    # ── Technical ──────────────────────────────────────────────
     def get_technical_data(self, ticker):
         def _fetch():
             stock = self._get_ticker(ticker)
@@ -91,10 +118,8 @@ class DataLoader:
             if df is not None and not df.empty:
                 return df
             return None
-
         return _fetch_with_retry(_fetch, retries=3, delay=2)
 
-    # ── Fundamental ────────────────────────────────────────────
     def get_fundamental_data(self, ticker):
         def _fetch():
             stock = self._get_ticker(ticker)
@@ -109,8 +134,7 @@ class DataLoader:
         if info is None:
             return {}
 
-        # --- Extract insider purchases & sales ---
-        insider_buys = 0
+        insider_buys  = 0
         insider_sells = 0
 
         def _fetch_insider():
@@ -129,15 +153,14 @@ class DataLoader:
         except:
             pass
 
-        info['insider_buys'] = insider_buys
+        info['insider_buys']  = insider_buys
         info['insider_sells'] = insider_sells
         return info
 
-    # ── Derivative ─────────────────────────────────────────────
     def get_derivative_data(self, ticker):
         def _fetch():
             stock = self._get_ticker(ticker)
-            info = stock.info
+            info  = stock.info
             if not info:
                 return None
 
@@ -151,20 +174,18 @@ class DataLoader:
                 random.seed(ticker)
                 short_float = random.uniform(0.01, 0.08)
 
-            short_ratio = info.get('shortRatio', 0)
-
+            short_ratio   = info.get('shortRatio', 0)
             options_dates = stock.options
+
             if options_dates:
-                chain = stock.option_chain(options_dates[0])
+                chain     = stock.option_chain(options_dates[0])
                 calls_vol = chain.calls['volume'].sum()
                 puts_vol  = chain.puts['volume'].sum()
                 pcr_vol   = puts_vol / calls_vol if calls_vol > 0 else 0
-
-                calls_oi = chain.calls['openInterest'].sum()
-                puts_oi  = chain.puts['openInterest'].sum()
-                pcr_oi   = puts_oi / calls_oi if calls_oi > 0 else 0
-
-                avg_iv = (chain.calls['impliedVolatility'].mean() + chain.puts['impliedVolatility'].mean()) / 2
+                calls_oi  = chain.calls['openInterest'].sum()
+                puts_oi   = chain.puts['openInterest'].sum()
+                pcr_oi    = puts_oi / calls_oi if calls_oi > 0 else 0
+                avg_iv    = (chain.calls['impliedVolatility'].mean() + chain.puts['impliedVolatility'].mean()) / 2
             else:
                 pcr_vol = pcr_oi = avg_iv = 0
 
@@ -178,7 +199,6 @@ class DataLoader:
             return {"valid": False}
         return result
 
-    # ── Source name helper ──────────────────────────────────────
     def _get_source_name(self, url):
         try:
             domain = urlparse(url).netloc.replace("www.", "")
@@ -195,17 +215,16 @@ class DataLoader:
         except:
             return "News"
 
-    # ── FinViz scraper ──────────────────────────────────────────
     def _scrape_finviz(self, ticker):
         url = f"https://finviz.com/quote.ashx?t={ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
         for attempt in range(3):
             try:
-                response = requests.get(url, headers=headers, timeout=8)
+                session  = _build_session()
+                response = session.get(url, timeout=8)
                 if response.status_code != 200:
                     time.sleep(2)
                     continue
-                soup = BeautifulSoup(response.text, 'html.parser')
+                soup       = BeautifulSoup(response.text, 'html.parser')
                 news_table = soup.find(id='news-table')
                 if not news_table:
                     return []
@@ -217,10 +236,10 @@ class DataLoader:
                         if not link.startswith("http"):
                             link = "https://finviz.com/" + link.strip("/")
                         headlines.append({
-                            "title": a_tag.text.strip(),
-                            "link": link,
+                            "title":  a_tag.text.strip(),
+                            "link":   link,
                             "source": self._get_source_name(link),
-                            "time": tr.find('td').text.strip() if tr.find('td') else ""
+                            "time":   tr.find('td').text.strip() if tr.find('td') else ""
                         })
                 return headlines[:30]
             except:
@@ -228,7 +247,6 @@ class DataLoader:
                 continue
         return []
 
-    # ── Sentiment ───────────────────────────────────────────────
     def get_social_sentiment(self, ticker):
         if not API_KEY_POOL:
             return {"error": "API Keys are missing! Add them to Streamlit Secrets."}, "Error"
@@ -238,14 +256,11 @@ class DataLoader:
             return {"error": "FinViz returned 0 articles. It might be a bad ticker or a temporary block."}, "No Data"
 
         titles_only = [h['title'] for h in raw_news]
-
         prompt = f"""
         Analyze these headlines for "{ticker}": {json.dumps(titles_only)}
-
         Task:
         1. Classify each as 'Bullish', 'Bearish', or 'Neutral/Irrelevant'.
         2. Assign an Impact Score (0-10). 0=Irrelevant, 10=Major News.
-
         Output JSON ONLY:
         {{
             "analysis": [
@@ -278,7 +293,6 @@ class DataLoader:
 
         return {"error": "Groq AI Services are busy. Try again in 1 minute."}, "Error"
 
-    # ── Competitors ─────────────────────────────────────────────
     def get_competitors(self, ticker, company_name, sector, industry):
         if not API_KEY_POOL:
             return []
