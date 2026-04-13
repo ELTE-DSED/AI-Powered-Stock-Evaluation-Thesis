@@ -155,6 +155,29 @@ class DataLoader:
 
         info['insider_buys']  = insider_buys
         info['insider_sells'] = insider_sells
+
+        # Fetch financial statements for Piotroski multi-year signals
+        try:
+            stock = self._get_ticker(ticker)
+            fin = stock.financials
+            info['_financials'] = fin if fin is not None and not fin.empty else None
+        except Exception:
+            info['_financials'] = None
+
+        try:
+            stock = self._get_ticker(ticker)
+            bs = stock.balance_sheet
+            info['_balance_sheet'] = bs if bs is not None and not bs.empty else None
+        except Exception:
+            info['_balance_sheet'] = None
+
+        try:
+            stock = self._get_ticker(ticker)
+            cf = stock.cashflow
+            info['_cashflow'] = cf if cf is not None and not cf.empty else None
+        except Exception:
+            info['_cashflow'] = None
+
         return info
 
     def get_derivative_data(self, ticker):
