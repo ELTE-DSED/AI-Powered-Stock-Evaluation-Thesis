@@ -115,22 +115,24 @@ class ScoringEngine:
         avg_iv      = data.get('avg_iv')
 
         scores = {}
+        options_signal_count = sum(value is not None for value in (pcr_vol, pcr_oi, avg_iv))
+        short_signal_count = sum(value is not None for value in (short_float, short_ratio))
 
         if short_float is not None:
             sf = short_float * 100
             if not self.current_tech_trend:
                 float_score = 15 if sf > 10 else 50
             else:
-                float_score = 85 if sf < 3 else 30 if sf > 15 else 55
-            scores['float'] = (float_score, 0.20)
+                float_score = 70 if sf < 3 else 30 if sf > 15 else 50
+            scores['float'] = (float_score, 0.10)
 
         if short_ratio is not None:
             sf_pct = short_float * 100 if short_float is not None else 0
             if not self.current_tech_trend:
                 ratio_score = 20 if short_ratio > 5 else 50
             else:
-                ratio_score = 95 if short_ratio > 8 and sf_pct > 10 else 70 if short_ratio < 3 else 35
-            scores['ratio'] = (ratio_score, 0.20)
+                ratio_score = 85 if short_ratio > 8 and sf_pct > 10 else 60 if short_ratio < 3 else 35
+            scores['ratio'] = (ratio_score, 0.10)
 
         if pcr_oi is not None:
             if pcr_oi < 0.6:    oi_score = 95
@@ -166,6 +168,14 @@ class ScoringEngine:
 
         total_w     = sum(w for _, w in scores.values())
         final_score = sum(s * w for s, w in scores.values()) / total_w
+
+        # Prevent sparse derivative data from looking highly confident.
+        if options_signal_count == 0 and short_signal_count <= 1:
+            final_score = 0
+        elif options_signal_count == 0:
+            final_score = min(final_score, 35)
+        elif options_signal_count == 1:
+            final_score = min(final_score, 55)
 
         meta = {
             "pcr_vol":     pcr_vol,

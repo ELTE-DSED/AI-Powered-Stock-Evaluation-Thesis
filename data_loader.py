@@ -3,6 +3,7 @@ import pandas as pd
 import random
 import requests
 import time
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from groq import Groq
 import json
@@ -102,14 +103,60 @@ def convert_name_to_ticker(user_input):
 
 class DataLoader:
     def __init__(self):
-        pass
+        self._ticker_cache = {}
+        self._info_cache = {}
+        self._statement_cache = {}
 
     def _get_ticker(self, ticker):
+        ticker = ticker.upper()
+        if ticker in self._ticker_cache:
+            return self._ticker_cache[ticker]
+
         session = _build_session()
         try:
-            return yf.Ticker(ticker, session=session)
+            stock = yf.Ticker(ticker, session=session)
         except Exception:
-            return yf.Ticker(ticker)
+            stock = yf.Ticker(ticker)
+        self._ticker_cache[ticker] = stock
+        return stock
+
+    def _get_info(self, ticker):
+        ticker = ticker.upper()
+        if ticker in self._info_cache:
+            return self._info_cache[ticker]
+
+        stock = self._get_ticker(ticker)
+        info = stock.info
+        self._info_cache[ticker] = info if info else {}
+        return self._info_cache[ticker]
+
+    def _get_financial_statements(self, ticker):
+        ticker = ticker.upper()
+        if ticker in self._statement_cache:
+            return self._statement_cache[ticker]
+
+        stock = self._get_ticker(ticker)
+
+        def fetch_attr(attr_name):
+            try:
+                value = getattr(stock, attr_name)
+                return value if value is not None and not value.empty else None
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            financials_future = executor.submit(fetch_attr, "financials")
+            balance_sheet_future = executor.submit(fetch_attr, "balance_sheet")
+            cashflow_future = executor.submit(fetch_attr, "cashflow")
+
+            statements = {
+                "_financials": financials_future.result(),
+                "_balance_sheet": balance_sheet_future.result(),
+                "_cashflow": cashflow_future.result(),
+            }
+
+        self._statement_cache[ticker] = statements
+        return statements
 
     def get_technical_data(self, ticker):
         def _fetch():
@@ -122,13 +169,12 @@ class DataLoader:
 
     def get_fundamental_data(self, ticker):
         def _fetch():
-            stock = self._get_ticker(ticker)
-            info = stock.info
+            info = self._get_info(ticker)
             if not info:
                 return None
             if 'regularMarketPrice' not in info and 'currentPrice' not in info:
                 return None
-            return info
+            return dict(info)
 
         info = _fetch_with_retry(_fetch, retries=3, delay=2)
         if info is None:
@@ -156,61 +202,40 @@ class DataLoader:
         info['insider_buys']  = insider_buys
         info['insider_sells'] = insider_sells
 
-        # Fetch financial statements for Piotroski multi-year signals
-        try:
-            stock = self._get_ticker(ticker)
-            fin = stock.financials
-            info['_financials'] = fin if fin is not None and not fin.empty else None
-        except Exception:
-            info['_financials'] = None
-
-        try:
-            stock = self._get_ticker(ticker)
-            bs = stock.balance_sheet
-            info['_balance_sheet'] = bs if bs is not None and not bs.empty else None
-        except Exception:
-            info['_balance_sheet'] = None
-
-        try:
-            stock = self._get_ticker(ticker)
-            cf = stock.cashflow
-            info['_cashflow'] = cf if cf is not None and not cf.empty else None
-        except Exception:
-            info['_cashflow'] = None
+        info.update(self._get_financial_statements(ticker))
 
         return info
 
     def get_derivative_data(self, ticker):
         def _fetch():
             stock = self._get_ticker(ticker)
-            info  = stock.info
+            info  = self._get_info(ticker)
             if not info:
                 return None
 
             short_float = info.get('shortPercentFloat')
-            if not short_float:
+            if short_float is None:
                 shares_short = info.get('sharesShort')
                 shares_float = info.get('floatShares')
                 if shares_short and shares_float:
                     short_float = shares_short / shares_float
-            if not short_float:
-                random.seed(ticker)
-                short_float = random.uniform(0.01, 0.08)
 
-            short_ratio   = info.get('shortRatio', 0)
+            short_ratio   = info.get('shortRatio')
             options_dates = stock.options
 
             if options_dates:
                 chain     = stock.option_chain(options_dates[0])
                 calls_vol = chain.calls['volume'].sum()
                 puts_vol  = chain.puts['volume'].sum()
-                pcr_vol   = puts_vol / calls_vol if calls_vol > 0 else 0
+                pcr_vol   = puts_vol / calls_vol if calls_vol > 0 else None
                 calls_oi  = chain.calls['openInterest'].sum()
                 puts_oi   = chain.puts['openInterest'].sum()
-                pcr_oi    = puts_oi / calls_oi if calls_oi > 0 else 0
-                avg_iv    = (chain.calls['impliedVolatility'].mean() + chain.puts['impliedVolatility'].mean()) / 2
+                pcr_oi    = puts_oi / calls_oi if calls_oi > 0 else None
+                call_iv   = chain.calls['impliedVolatility'].mean()
+                put_iv    = chain.puts['impliedVolatility'].mean()
+                avg_iv    = (call_iv + put_iv) / 2 if pd.notna(call_iv) and pd.notna(put_iv) else None
             else:
-                pcr_vol = pcr_oi = avg_iv = 0
+                pcr_vol = pcr_oi = avg_iv = None
 
             return {
                 "short_float": short_float, "short_ratio": short_ratio,

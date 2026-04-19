@@ -1,5 +1,6 @@
 import streamlit as st
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 
@@ -209,30 +210,271 @@ st.markdown('<div class="sub-header">Refining market noise into institutional-gr
 
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    with st.form(key='search_form'):
-        user_input = st.text_input("", placeholder="Enter Ticker or Company Name (e.g. Nvidia, AAPL)...")
-        submit_button = st.form_submit_button(label='ANALYZE')
+    if "search_query" not in st.session_state:
+        st.session_state.search_query = st.query_params.get("ticker", "")
+        if st.session_state.search_query:
+            st.session_state.analyzing = True
+    if "analyzing" not in st.session_state:
+        st.session_state.analyzing = False
 
-if submit_button and user_input:
-    ticker = convert_name_to_ticker(user_input)
+    with st.form("search_form", clear_on_submit=False):
+        user_input = st.text_input(
+            "",
+            value=st.session_state.search_query,
+            placeholder="Enter Ticker or Company Name (e.g. NVDA)...",
+            key="search_input",
+        ).strip()
+        submit_button = st.form_submit_button("ANALYZE", use_container_width=True)
+
+    final_input = user_input
+    if submit_button:
+        st.session_state.search_query = final_input
+        st.session_state.analyzing = True
+
+if submit_button and final_input:
+    st.query_params["ticker"] = final_input
+
+intro_placeholder = st.empty()
+if not submit_button and not user_input and not st.session_state.get("analyzing"):
+    with intro_placeholder.container():
+        st.markdown("""
+    <style>
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 20px;
+        margin: 40px 0;
+        max-width: 1200px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    .feature-card {
+        background: linear-gradient(145deg, rgba(26,28,31,0.9) 0%, rgba(17,19,22,0.95) 100%);
+        border: 1px solid rgba(242,202,80,0.15);
+        border-radius: 12px;
+        padding: 28px;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    .feature-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #f2ca50 0%, #d4af37 50%, transparent 100%);
+        opacity: 0.6;
+    }
+    .feature-card:hover {
+        transform: translateY(-4px);
+        border-color: rgba(242,202,80,0.4);
+        box-shadow: 0 12px 40px rgba(242,202,80,0.1);
+    }
+    .feature-icon {
+        width: 48px;
+        height: 48px;
+        background: linear-gradient(135deg, rgba(242,202,80,0.15) 0%, rgba(242,202,80,0.05) 100%);
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 16px;
+        font-size: 24px;
+    }
+    .feature-title {
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #e2e2e6;
+        margin-bottom: 8px;
+        letter-spacing: -0.01em;
+    }
+    .feature-desc {
+        font-size: 0.9rem;
+        color: #8a8c90;
+        line-height: 1.6;
+    }
+    .stats-row {
+        display: flex;
+        justify-content: center;
+        gap: 60px;
+        margin: 50px 0 30px 0;
+        flex-wrap: wrap;
+    }
+    .stat-item {
+        text-align: center;
+    }
+    .stat-number {
+        font-family: 'Manrope', sans-serif;
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: #f2ca50;
+        letter-spacing: -0.02em;
+    }
+    .stat-label {
+        font-size: 0.75rem;
+        color: #6b6d70;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        margin-top: 4px;
+    }
+    .how-it-works {
+        max-width: 800px;
+        margin: 50px auto;
+        padding: 0 20px;
+    }
+    .section-title {
+        font-family: 'Manrope', sans-serif;
+        font-size: 0.85rem;
+        font-weight: 800;
+        color: #f2ca50;
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        text-align: center;
+        margin-bottom: 30px;
+    }
+    .step-row {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        margin-bottom: 20px;
+        padding: 20px;
+        background: rgba(26,28,31,0.5);
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
+    .step-number {
+        width: 40px;
+        height: 40px;
+        background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: 'Manrope', sans-serif;
+        font-weight: 800;
+        color: #111316;
+        font-size: 1.1rem;
+        flex-shrink: 0;
+    }
+    .step-text {
+        color: #c6c6c6;
+        font-size: 0.95rem;
+    }
+    .step-text strong {
+        color: #e2e2e6;
+        display: block;
+        margin-bottom: 4px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+        st.markdown("""
+    <div class="feature-grid">
+        <div class="feature-card">
+            <div class="feature-icon">📊</div>
+            <div class="feature-title">Fundamental Analysis</div>
+            <div class="feature-desc">Deep dive into financial health with Piotroski F-Score, P/E ratios, ROE, and debt-to-equity metrics.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">📈</div>
+            <div class="feature-title">Technical Indicators</div>
+            <div class="feature-desc">RSI, MACD, Bollinger Bands, and trend analysis across multiple timeframes with SMA overlays.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🤖</div>
+            <div class="feature-title">AI Sentiment</div>
+            <div class="feature-desc">Real-time news sentiment analysis powered by LLMs, aggregating headlines from major financial sources.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <div class="feature-title">Options & Derivatives</div>
+            <div class="feature-desc">Put/Call ratios, implied volatility, short interest, and squeeze indicators for complete market context.</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+        st.markdown("""
+    <div class="stats-row">
+        <div class="stat-item">
+            <div class="stat-number">4</div>
+            <div class="stat-label">Analysis Pillars</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">Real-Time</div>
+            <div class="stat-label">Data Updates</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">AI</div>
+            <div class="stat-label">Powered Insights</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+        st.markdown("""
+    <div class="how-it-works">
+        <div class="section-title">How It Works</div>
+        <div class="step-row">
+            <div class="step-number">1</div>
+            <div class="step-text"><strong>Enter a Stock</strong>Type any ticker symbol or company name in the search bar above.</div>
+        </div>
+        <div class="step-row">
+            <div class="step-number">2</div>
+            <div class="step-text"><strong>AI Analysis</strong>Our system aggregates real-time data across fundamentals, technicals, sentiment, and derivatives.</div>
+        </div>
+        <div class="step-row">
+            <div class="step-number">3</div>
+            <div class="step-text"><strong>Get Your Score</strong>Receive a composite rating with detailed breakdowns and actionable insights.</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+if submit_button and final_input:
+    intro_placeholder.empty()
+    final_input = str(final_input).strip()
+    ticker = convert_name_to_ticker(final_input)
     loader = DataLoader()
     engine = ScoringEngine()
 
-    status = st.empty()
-    status.info(f"🔄 Finding data for {ticker}...")
+    loading_placeholder = st.empty()
+    loading_placeholder.markdown(f"""
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;min-height:180px;padding-top:2vh;">
+        <div style="font-size:3rem;margin-bottom:18px;">🔄</div>
+        <div style="font-family:'Manrope',sans-serif;font-size:1.2rem;color:#f2ca50;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;text-align:center;">
+            Fetching Real-Time Analysis for {ticker}...
+        </div>
+        <div style="margin-top:26px;width:200px;height:3px;background:#1a1c1f;border-radius:2px;overflow:hidden;">
+            <div style="width:100%;height:100%;background:linear-gradient(90deg,#f2ca50,#d4af37);animation:pulse 1.5s infinite;"></div>
+        </div>
+    </div>
+    <style>
+    @keyframes pulse {{
+        0% {{ opacity: 1; }}
+        50% {{ opacity: 0.5; }}
+        100% {{ opacity: 1; }}
+    }}
+    </style>
+    """, unsafe_allow_html=True)
 
     df_tech = loader.get_technical_data(ticker)
 
     if df_tech is None or df_tech.empty:
-        status.empty()
-        st.error(f"❌ Could not find data for '{user_input}' (Resolved: {ticker}). Please check the name or ticker.")
+        loading_placeholder.empty()
+        st.error(f"❌ Could not find data for '{final_input}' (Resolved: {ticker}). Please check the name or ticker.")
+        st.session_state.analyzing = False
     else:
-        status.info(f"🔄 Fetching Real-Time Analysis for {ticker}...")
-
         score_tech, meta_tech   = engine.calculate_technical(df_tech)
-        data_social, social_src = loader.get_social_sentiment(ticker)
-        data_deriv              = loader.get_derivative_data(ticker)
-        data_fund               = loader.get_fundamental_data(ticker)
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            social_future = executor.submit(loader.get_social_sentiment, ticker)
+            deriv_future = executor.submit(loader.get_derivative_data, ticker)
+            fund_future = executor.submit(loader.get_fundamental_data, ticker)
+
+            data_social, social_src = social_future.result()
+            data_deriv = deriv_future.result()
+            data_fund = fund_future.result()
 
         score_social, meta_social = engine.calculate_social(data_social)
         score_deriv,  meta_deriv  = engine.calculate_derivative(data_deriv)
@@ -252,7 +494,7 @@ if submit_button and user_input:
         composite       = min(100, base_composite + insider_booster)
 
         rating_text, rating_color = get_rating(composite)
-        status.empty()
+        loading_placeholder.empty()
 
         company_name = meta_fund.get('longName') or meta_fund.get('shortName') or ticker
         sector       = meta_fund.get('sector', '')
@@ -564,7 +806,7 @@ if submit_button and user_input:
 <body>
 <div style="position:relative;">
   <div id="legend">
-    <div class="leg"><div class="dot" style="background:#f2ca50;"></div>Price</div>
+    <div class="leg"><div class="dot" style="background:#26a69a;"></div>Price</div>
     <div class="leg"><div class="dot" style="background:#bfcdff;"></div>SMA 50</div>
     <div class="leg"><div class="dot" style="background:#ffb4ab;border-top:2px dashed #ffb4ab;height:0;"></div>SMA 200</div>
     <div class="leg"><div class="dot" style="background:rgba(242,202,80,0.3);"></div>BB Band</div>
@@ -585,11 +827,10 @@ if submit_button and user_input:
     handleScale:   {{ mouseWheel: true, pinch: true, axisPressedMouseMove: true }},
   }});
 
-  // Candlesticks — gold up, red down (AUREUM SLATE palette)
   const cSeries = chart.addCandlestickSeries({{
-    upColor: '#f2ca50', downColor: '#ffb4ab',
-    borderUpColor: '#d4af37', borderDownColor: '#ffb4ab',
-    wickUpColor: '#f2ca50', wickDownColor: '#ffb4ab',
+    upColor: '#26a69a', downColor: '#ef5350',
+    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
   }});
   cSeries.setData({candles_json});
 
@@ -624,3 +865,5 @@ if submit_button and user_input:
                 <div style="text-align:right;margin-top:6px;font-family:Inter,sans-serif;font-size:0.78em;text-transform:uppercase;letter-spacing:0.1em;">
                     <a href="https://www.tradingview.com/chart/?symbol={ticker}" target="_blank" style="color:#f2ca50;font-weight:600;">View on TradingView ↗</a>
                 </div>""", unsafe_allow_html=True)
+
+    st.session_state.analyzing = False
