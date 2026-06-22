@@ -431,7 +431,7 @@ if not submit_button and not user_input and not st.session_state.get("analyzing"
     </div>
     """, unsafe_allow_html=True)
 
-if submit_button and final_input:
+if (submit_button or st.session_state.get("analyzing")) and final_input:
     intro_placeholder.empty()
     final_input = str(final_input).strip()
     ticker = convert_name_to_ticker(final_input)
