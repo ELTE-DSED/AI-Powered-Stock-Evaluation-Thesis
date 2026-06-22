@@ -31,17 +31,6 @@ if api_keys_str:
 else:
     API_KEY_POOL = []
 
-# --- SCRAPER API KEY LOADING ---
-SCRAPER_API_KEY = None
-try:
-    if "SCRAPER_API_KEY" in st.secrets:
-        SCRAPER_API_KEY = st.secrets["SCRAPER_API_KEY"]
-except: pass
-
-if not SCRAPER_API_KEY:
-    load_dotenv()
-    SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
-
 # --- ROTATING USER AGENTS ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -56,10 +45,6 @@ USER_AGENTS = [
 def _build_session():
     session = requests.Session()
     session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
-    if SCRAPER_API_KEY:
-        proxy_url = f"http://scraperapi:{SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001"
-        session.proxies = {"http": proxy_url, "https": proxy_url}
-        session.verify = False
     return session
 
 # --- RETRY HELPER ---
