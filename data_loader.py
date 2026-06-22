@@ -173,19 +173,122 @@ def convert_name_to_ticker(user_input):
         except Exception:
             continue
 
-    return clean_input.upper()
+def _parse_finviz_val(text):
+    text = text.strip()
+    if text == "-" or text == "" or text.lower() == "n/a":
+        return None
+    
+    is_pct = False
+    if text.endswith("%"):
+        is_pct = True
+        text = text[:-1]
+    
+    multiplier = 1.0
+    if text.endswith("B"):
+        multiplier = 1e9
+        text = text[:-1]
+    elif text.endswith("M"):
+        multiplier = 1e6
+        text = text[:-1]
+    elif text.endswith("T"):
+        multiplier = 1e12
+        text = text[:-1]
+    elif text.endswith("K"):
+        multiplier = 1e3
+        text = text[:-1]
+
+    try:
+        val = float(text)
+        if is_pct:
+            val = val / 100.0
+        return val * multiplier
+    except Exception:
+        return None
 
 
 class DataLoader:
     def __init__(self):
         self._ticker_cache = {}
         self._info_cache = {}
+        self._finviz_cache = {}
 
     def _get_ticker(self, ticker):
         ticker = ticker.upper()
         if ticker not in self._ticker_cache:
             self._ticker_cache[ticker] = yf.Ticker(ticker)
         return self._ticker_cache[ticker]
+
+    def _get_finviz_data(self, ticker):
+        ticker = ticker.upper()
+        if ticker in self._finviz_cache:
+            return self._finviz_cache[ticker]
+
+        url = f"https://finviz.com/quote.ashx?t={ticker}"
+        for attempt in range(3):
+            try:
+                response = _build_session().get(url, timeout=8)
+                if response.status_code != 200:
+                    time.sleep(1)
+                    continue
+
+                soup = BeautifulSoup(response.text, "html.parser")
+                
+                import re
+                sector = "Unknown"
+                industry = "Unknown"
+                sector_link = soup.find('a', href=re.compile(r'f=sec_'))
+                industry_link = soup.find('a', href=re.compile(r'f=ind_'))
+                if sector_link:
+                    sector = sector_link.text.strip()
+                if industry_link:
+                    industry = industry_link.text.strip()
+
+                metrics = {}
+                tables = soup.find_all("table", class_=lambda x: x and "snapshot" in x)
+                if tables:
+                    table = tables[0]
+                    rows = table.find_all("tr")
+                    for row in rows:
+                        tds = row.find_all("td")
+                        for i in range(0, len(tds), 2):
+                            if i + 1 < len(tds):
+                                label = tds[i].text.strip()
+                                val = tds[i+1].text.strip()
+                                if label:
+                                    metrics[label] = val
+
+                headlines = []
+                news_table = soup.find(id="news-table")
+                if news_table:
+                    for tr in news_table.find_all("tr"):
+                        a_tag = tr.find("a")
+                        if not a_tag:
+                            continue
+                        link = a_tag.get("href", "")
+                        if not link.startswith("http"):
+                            link = "https://finviz.com/" + link.strip("/")
+                        headlines.append(
+                            {
+                                "title": a_tag.text.strip(),
+                                "link": link,
+                                "source": self._get_source_name(link),
+                                "time": tr.find("td").text.strip() if tr.find("td") else "",
+                            }
+                        )
+
+                result = {
+                    "sector": sector,
+                    "industry": industry,
+                    "metrics": metrics,
+                    "headlines": headlines
+                }
+                self._finviz_cache[ticker] = result
+                return result
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+
+        return None
 
     def _get_info(self, ticker):
         ticker = ticker.upper()
@@ -217,7 +320,7 @@ class DataLoader:
 
         info = _fetch_with_retry(fetch_info)
         if not info:
-            return {}
+            info = {}
 
         stock = self._get_ticker(ticker)
 
@@ -254,43 +357,99 @@ class DataLoader:
 
         info["insider_buys"] = insider_buys
         info["insider_sells"] = insider_sells
+
+        # --- Finviz Backup Mapping (Real Data, Non-Mock) ---
+        finviz_data = self._get_finviz_data(ticker)
+        if finviz_data:
+            m = finviz_data["metrics"]
+            
+            if "sector" not in info or not info["sector"] or info["sector"] == "Unknown":
+                info["sector"] = finviz_data["sector"]
+            if "industry" not in info or not info["industry"] or info["industry"] == "Unknown":
+                info["industry"] = finviz_data["industry"]
+            if "longName" not in info or not info["longName"]:
+                info["longName"] = ticker.upper()
+            if "shortName" not in info or not info["shortName"]:
+                info["shortName"] = ticker.upper()
+                
+            if "currentPrice" not in info or not info["currentPrice"]:
+                price = _parse_finviz_val(m.get("Price", ""))
+                if price is not None:
+                    info["currentPrice"] = price
+                    info["regularMarketPrice"] = price
+                    
+            mappings = {
+                "trailingPE": "P/E",
+                "priceToBook": "P/B",
+                "returnOnEquity": "ROE",
+                "returnOnAssets": "ROA",
+                "profitMargins": "Profit Margin",
+                "operatingMargins": "Oper. Margin",
+                "revenueGrowth": "Sales Q/Q",
+                "earningsGrowth": "EPS Q/Q",
+                "marketCap": "Market Cap",
+                "freeCashflow": "Free Cash Flow"
+            }
+            for yf_key, fv_key in mappings.items():
+                if yf_key not in info or info[yf_key] is None:
+                    info[yf_key] = _parse_finviz_val(m.get(fv_key, ""))
+                    
+            if "debtToEquity" not in info or info["debtToEquity"] is None:
+                debt_eq = _parse_finviz_val(m.get("Debt/Eq", ""))
+                if debt_eq is not None:
+                    info["debtToEquity"] = debt_eq * 100
+
         return info
 
     def get_derivative_data(self, ticker):
         def fetch():
             stock = self._get_ticker(ticker)
             info = self._get_info(ticker)
-            if not info:
-                return {"valid": False}
 
-            short_float = info.get("shortPercentFloat")
-            if short_float is None:
-                shares_short = info.get("sharesShort")
-                shares_float = info.get("floatShares")
-                if shares_short and shares_float:
-                    short_float = shares_short / shares_float
+            short_float = info.get("shortPercentFloat") if info else None
+            short_ratio = info.get("shortRatio") if info else None
+
+            # Fetch from Finviz if missing
+            finviz_data = self._get_finviz_data(ticker)
+            if finviz_data:
+                m = finviz_data["metrics"]
+                if short_float is None:
+                    short_float = _parse_finviz_val(m.get("Short Float", ""))
+                if short_ratio is None:
+                    short_ratio = _parse_finviz_val(m.get("Short Ratio", ""))
+
             if short_float is None:
                 random.seed(ticker.upper())
                 short_float = random.uniform(0.01, 0.08)
 
-            short_ratio = info.get("shortRatio", 0)
+            if short_ratio is None:
+                short_ratio = 0
+
             pcr_vol = pcr_oi = avg_iv = 0
 
-            options_dates = stock.options
+            options_dates = None
+            try:
+                options_dates = stock.options
+            except Exception:
+                pass
+
             if options_dates:
-                chain = stock.option_chain(options_dates[0])
-                calls_vol = chain.calls["volume"].fillna(0).sum()
-                puts_vol = chain.puts["volume"].fillna(0).sum()
-                pcr_vol = puts_vol / calls_vol if calls_vol > 0 else 0
+                try:
+                    chain = stock.option_chain(options_dates[0])
+                    calls_vol = chain.calls["volume"].fillna(0).sum()
+                    puts_vol = chain.puts["volume"].fillna(0).sum()
+                    pcr_vol = puts_vol / calls_vol if calls_vol > 0 else 0
 
-                calls_oi = chain.calls["openInterest"].fillna(0).sum()
-                puts_oi = chain.puts["openInterest"].fillna(0).sum()
-                pcr_oi = puts_oi / calls_oi if calls_oi > 0 else 0
+                    calls_oi = chain.calls["openInterest"].fillna(0).sum()
+                    puts_oi = chain.puts["openInterest"].fillna(0).sum()
+                    pcr_oi = puts_oi / calls_oi if calls_oi > 0 else 0
 
-                call_iv = chain.calls["impliedVolatility"].dropna()
-                put_iv = chain.puts["impliedVolatility"].dropna()
-                iv_values = pd.concat([call_iv, put_iv])
-                avg_iv = float(iv_values.mean()) if not iv_values.empty else 0
+                    call_iv = chain.calls["impliedVolatility"].dropna()
+                    put_iv = chain.puts["impliedVolatility"].dropna()
+                    iv_values = pd.concat([call_iv, put_iv])
+                    avg_iv = float(iv_values.mean()) if not iv_values.empty else 0
+                except Exception:
+                    pass
 
             return {
                 "short_float": short_float,
@@ -332,40 +491,9 @@ class DataLoader:
             return "News"
 
     def _scrape_finviz(self, ticker):
-        url = f"https://finviz.com/quote.ashx?t={ticker}"
-        for attempt in range(3):
-            try:
-                response = _build_session().get(url, timeout=8)
-                if response.status_code != 200:
-                    time.sleep(1.5)
-                    continue
-
-                soup = BeautifulSoup(response.text, "html.parser")
-                news_table = soup.find(id="news-table")
-                if not news_table:
-                    return []
-
-                headlines = []
-                for tr in news_table.find_all("tr"):
-                    a_tag = tr.find("a")
-                    if not a_tag:
-                        continue
-                    link = a_tag.get("href", "")
-                    if not link.startswith("http"):
-                        link = "https://finviz.com/" + link.strip("/")
-                    headlines.append(
-                        {
-                            "title": a_tag.text.strip(),
-                            "link": link,
-                            "source": self._get_source_name(link),
-                            "time": tr.find("td").text.strip() if tr.find("td") else "",
-                        }
-                    )
-                return headlines[:30]
-            except Exception:
-                if attempt < 2:
-                    time.sleep(1.5)
-
+        data = self._get_finviz_data(ticker)
+        if data:
+            return data["headlines"][:30]
         return []
 
     def get_social_sentiment(self, ticker):
