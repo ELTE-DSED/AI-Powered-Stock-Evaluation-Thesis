@@ -3,7 +3,7 @@ import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import quote, quote_plus, urlencode, urlparse, urlsplit, urlunsplit
 
 import pandas as pd
 import requests
@@ -42,16 +42,35 @@ def _proxied_yahoo_url(url):
     return url
 
 
+def _prepare_proxied_yahoo_request(url, kwargs):
+    url = str(url)
+    if not (USE_YAHOO_PROXY and "yahoo.com" in url and not url.startswith(WORKER_URL)):
+        return url, kwargs
+
+    kwargs = dict(kwargs)
+    params = kwargs.pop("params", None)
+    if params:
+        parts = urlsplit(url)
+        query = parts.query
+        extra_query = urlencode(params, doseq=True)
+        query = f"{query}&{extra_query}" if query else extra_query
+        url = urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+    return _proxied_yahoo_url(url), kwargs
+
+
 def _install_yahoo_proxy_hooks():
     original_session = requests.Session
     original_get = requests.get
 
     class YahooProxySession(original_session):
         def request(self, method, url, **kwargs):
-            return super().request(method, _proxied_yahoo_url(url), **kwargs)
+            url, kwargs = _prepare_proxied_yahoo_request(url, kwargs)
+            return super().request(method, url, **kwargs)
 
     def yahoo_proxy_get(url, **kwargs):
-        return original_get(_proxied_yahoo_url(url), **kwargs)
+        url, kwargs = _prepare_proxied_yahoo_request(url, kwargs)
+        return original_get(url, **kwargs)
 
     requests.Session = YahooProxySession
     requests.get = yahoo_proxy_get
@@ -63,7 +82,8 @@ def _install_yahoo_proxy_hooks():
 
         class CurlYahooProxySession(CurlSession):
             def request(self, method, url, **kwargs):
-                return super().request(method, _proxied_yahoo_url(url), **kwargs)
+                url, kwargs = _prepare_proxied_yahoo_request(url, kwargs)
+                return super().request(method, url, **kwargs)
 
         curl_requests.Session = CurlYahooProxySession
         yf_data.requests.Session = CurlYahooProxySession
