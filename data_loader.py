@@ -10,7 +10,35 @@ import json
 import os
 from dotenv import load_dotenv
 import streamlit as st
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
+
+# ── Proxy shim ──────────────────────────────────────────────────────────────
+WORKER_URL = "https://yahoo-proxy.umershehzad-at1863.workers.dev"
+
+# Patch standard requests
+class StandardYahooProxySession(requests.Session):
+    """Transparently reroutes all Yahoo Finance requests through Cloudflare Worker."""
+    def request(self, method, url, **kwargs):
+        if "yahoo.com" in url:
+            proxied = f"{WORKER_URL}?url={quote(url, safe='')}"
+            return super().request(method, proxied, **kwargs)
+        return super().request(method, url, **kwargs)
+
+requests.Session = StandardYahooProxySession
+
+# Patch curl_cffi requests (used by newer yfinance versions)
+try:
+    import curl_cffi.requests as curl_requests
+    class CurlYahooProxySession(curl_requests.Session):
+        def request(self, method, url, **kwargs):
+            if "yahoo.com" in url:
+                proxied = f"{WORKER_URL}?url={quote(url, safe='')}"
+                return super().request(method, proxied, **kwargs)
+            return super().request(method, url, **kwargs)
+    curl_requests.Session = CurlYahooProxySession
+except ImportError:
+    pass
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Force yfinance to use /tmp for cache (required on Streamlit Cloud)
 yf.set_tz_cache_location("/tmp")
